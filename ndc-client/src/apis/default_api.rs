@@ -204,43 +204,60 @@ pub async fn query_post(
     query_request: crate::models::QueryRequest,
 ) -> Result<crate::models::QueryResponse, Error> {
     let tracer = global::tracer("engine");
-    tracer
-        .in_span("query_post", |ctx| {
-            async {
-                let client = &configuration.client;
+    tracer.in_span("query_post", |ctx| {
+        async {
+            let client = &configuration.client;
 
-                let uri = append_path(&configuration.base_path, &["query"])
-                    .map_err(|_| Error::InvalidBaseURL)?;
-                let mut req_builder = client.request(reqwest::Method::POST, uri);
-
-                if let Some(ref user_agent) = configuration.user_agent {
-                    req_builder =
-                        req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
-                }
-
-                // Note: The headers will be merged in to any already set.
-                req_builder = req_builder.headers(configuration.headers.clone());
-
-                req_builder = req_builder.json(&query_request);
-
-                req_builder = inject_trace_context(req_builder);
-
-                let req = req_builder.build()?;
-                let resp = client.execute(req).with_traced_errors().await?;
-
-                let response_status = resp.status();
-                let response_content = resp.json().with_traced_errors().await?;
-
-                if !response_status.is_client_error() && !response_status.is_server_error() {
-                    serde_json::from_value(response_content).map_err(Error::from)
+            let uri_result = tracer.in_span("construct_uri", |_| {
+                append_path(&configuration.base_path, &["query"])
+            });
+            let uri = uri_result.map_err(|_| Error::InvalidBaseURL)?;
+            
+            let req_builder = tracer.in_span("initialize_request_builder", |_| {
+                let req_builder = client.request(reqwest::Method::POST, uri);
+                let req_builder = if let Some(ref user_agent) = configuration.user_agent {
+                    req_builder.header(reqwest::header::USER_AGENT, user_agent.clone())
                 } else {
-                    Err(construct_error(response_status, response_content))
+                    req_builder
+                };
+                req_builder.headers(configuration.headers.clone())
+            });
+
+            let serialized_request = tracer.in_span("serialize_request", |_| {
+                serde_json::to_string(&query_request).unwrap() // Assuming it always succeeds for demonstration purposes
+            });
+
+            let req_builder = req_builder.json(&serialized_request);
+
+            let req_building = tracer.in_span("build_request", |_| {
+                req_builder.build()
+            });
+            let req = req_building?;
+
+            let resp = tracer.in_span("execute_request", |_| {
+                async {
+                    client.execute(req).await
                 }
-            }
-            .with_context(ctx)
-        })
-        .await
+            }).await?;
+
+            let response_handling = tracer.in_span("process_response", |_| {
+                async {
+                    let response_status = resp.status();
+                    let response_content = resp.json::<serde_json::Value>().await?;
+                    if !response_status.is_client_error() && !response_status.is_server_error() {
+                        serde_json::from_value::<crate::models::QueryResponse>(response_content).map_err(Error::from)
+                    } else {
+                        Err(construct_error(response_status, response_content))
+                    }
+                }
+            }).await;
+
+            response_handling
+        }
+        .with_context(ctx)
+    }).await
 }
+
 
 pub async fn schema_get(
     configuration: &configuration::Configuration,
