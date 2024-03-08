@@ -223,11 +223,10 @@ pub async fn query_post(
                 req_builder.headers(configuration.headers.clone())
             });
 
-            let serialized_request = tracer.in_span("serialize_request", |_| {
-                serde_json::to_string(&query_request).unwrap() // Assuming it always succeeds for demonstration purposes
+            let req_builder = tracer.in_span("serialize_and_set_request_body", |_| {
+                req_builder.json(&query_request)
             });
-
-            let req_builder = req_builder.json(&serialized_request);
+            
 
             let req_building = tracer.in_span("build_request", |_| {
                 req_builder.build()
